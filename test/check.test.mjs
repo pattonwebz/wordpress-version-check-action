@@ -257,13 +257,44 @@ test('api.readFile decodes base64 and refuses non-file payloads', async () => {
 	await assert.rejects(() => directory.readFile('src', 'develop'), /not a file/);
 });
 
-test('api.listOpenIssues refuses to guess when the page is full', async () => {
-	const full = api({ owner: 'o', repo: 'r', token: 'tok' }, async () => ({
-		ok: true,
-		status: 200,
-		json: async () => Array.from({ length: 100 }, (_, i) => ({ number: i + 1 })),
+test('api.listOpenIssues reads the GraphQL issues connection and refuses to guess when truncated', async () => {
+	const calls = [];
+	const respondWith = (connection) => async (url, options) => {
+		calls.push({ url, options });
+		return {
+			ok: true,
+			status: 200,
+			json: async () => ({ data: { repository: { issues: connection } } }),
+		};
+	};
+
+	const nodes = [{ number: 7, title: 't', body: 'b' }];
+	const gh = api({ owner: 'o', repo: 'r', token: 'tok' }, respondWith({
+		nodes,
+		pageInfo: { hasNextPage: false },
+	}));
+	assert.deepEqual(await gh.listOpenIssues(), nodes);
+	assert.equal(calls[0].url, 'https://api.github.com/graphql');
+	assert.equal(calls[0].options.method, 'POST');
+
+	const payload = JSON.parse(calls[0].options.body);
+	assert.match(payload.query, /states: OPEN/);
+	assert.deepEqual(payload.variables, { owner: 'o', repo: 'r', first: 100 });
+
+	const full = api({ owner: 'o', repo: 'r', token: 'tok' }, respondWith({
+		nodes: [],
+		pageInfo: { hasNextPage: true },
 	}));
 	await assert.rejects(() => full.listOpenIssues(), /More than 100 open issues/);
+});
+
+test('api surfaces GraphQL errors that arrive alongside a 200', async () => {
+	const gh = api({ owner: 'o', repo: 'r', token: 'tok' }, async () => ({
+		ok: true,
+		status: 200,
+		json: async () => ({ data: null, errors: [{ message: 'Something went wrong' }] }),
+	}));
+	await assert.rejects(() => gh.listOpenIssues(), /Something went wrong/);
 });
 
 // ------------------------------------------------------------------ run()

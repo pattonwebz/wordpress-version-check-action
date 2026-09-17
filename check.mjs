@@ -18,6 +18,15 @@ const WP_VERSION_API = 'https://api.wordpress.org/core/version-check/1.7/';
 const CLOSE_COMMENT = 'The "Tested up to" version in the readme matches the latest version now, closing this issue.';
 const MAX_ISSUES = 100;
 
+const OPEN_ISSUES_QUERY = `query ($owner: String!, $repo: String!, $first: Int!) {
+	repository(owner: $owner, name: $repo) {
+		issues(first: $first, states: OPEN, orderBy: { field: CREATED_AT, direction: ASC }) {
+			nodes { number title body }
+			pageInfo { hasNextPage }
+		}
+	}
+}`;
+
 export const TITLES = {
 	stable: "The plugin hasn't been tested with the latest version of WordPress",
 	rc: "The plugin hasn't been tested with an upcoming version of WordPress",
@@ -190,6 +199,32 @@ export function api(config, fetchImpl = fetch) {
 		return response.status === 204 ? null : response.json();
 	};
 
+	// The REST /issues list endpoint is eventually consistent (measured: up to ~5s stale in both
+	// directions), which made rapid repeat runs re-comment on a just-closed issue or, worse, open
+	// duplicate issues. The GraphQL issues connection is immediately consistent, so the lookup uses
+	// it. Everything else stays on REST, where single-resource reads and writes are consistent.
+	const graphql = async (query, variables) => {
+		const response = await fetchImpl(`${API_ROOT}/graphql`, {
+			method: 'POST',
+			headers: {
+				accept: 'application/vnd.github+json',
+				authorization: `Bearer ${config.token}`,
+				'user-agent': 'wordpress-version-check-action',
+				'content-type': 'application/json',
+			},
+			body: JSON.stringify({ query, variables }),
+		});
+		if (!response.ok) {
+			const detail = typeof response.text === 'function' ? (await response.text()).slice(0, 300) : '';
+			throw new Error(`GitHub GraphQL failed: ${response.status} ${response.statusText} — ${detail}`);
+		}
+		const payload = await response.json();
+		if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+			throw new Error(`GitHub GraphQL error: ${payload.errors.map((error) => error.message).join('; ')}`);
+		}
+		return payload.data ?? {};
+	};
+
 	return {
 		defaultBranch: async () => (await request(base)).default_branch,
 
@@ -202,13 +237,21 @@ export function api(config, fetchImpl = fetch) {
 		},
 
 		listOpenIssues: async () => {
-			const issues = await request(`${base}/issues?state=open&per_page=${MAX_ISSUES}`);
-			if (issues.length >= MAX_ISSUES) {
+			const data = await graphql(OPEN_ISSUES_QUERY, {
+				owner: config.owner,
+				repo: config.repo,
+				first: MAX_ISSUES,
+			});
+			const connection = data.repository?.issues;
+			if (!connection) {
+				throw new Error(`Could not list issues for ${config.owner}/${config.repo}.`);
+			}
+			if (connection.pageInfo?.hasNextPage) {
 				throw new Error(
 					`More than ${MAX_ISSUES} open issues — this action refuses to guess which issue it owns. Narrow the lookup before re-running.`,
 				);
 			}
-			return issues;
+			return connection.nodes ?? [];
 		},
 
 		createIssue: async (fields) => request(`${base}/issues`, { method: 'POST', body: fields }),
