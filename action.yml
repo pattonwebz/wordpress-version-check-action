@@ -1,0 +1,53 @@
+name: 'WordPress version check'
+description: 'Open, update and auto-close a "tested up to" tracking issue when a plugin readme is behind WordPress. No labels.'
+author: 'William Patton'
+branding:
+  icon: 'bell'
+  color: 'blue'
+
+inputs:
+  github-token:
+    description: 'Token with issues:write. Defaults to the calling workflow token.'
+    required: false
+  readme:
+    description: 'Readme path, or several to try in order (newline or comma separated).'
+    required: false
+    default: 'readme.txt'
+  channel:
+    description: 'WordPress release channel to compare against: stable, rc or beta.'
+    required: false
+    default: 'rc'
+  assignees:
+    description: 'Comma-separated usernames to assign the issue to.'
+    required: false
+    default: ''
+  marker:
+    description: 'Hidden marker written into the issue body. Identifies the issue this action owns.'
+    required: false
+    default: '<!-- wp-version-check:tested-up-to -->'
+  dry-run:
+    description: 'Log what would happen without creating, updating, commenting or closing anything.'
+    required: false
+    default: 'false'
+
+outputs:
+  action:
+    description: 'What the action did (or would do in dry-run mode): none, created, updated, unchanged or closed.'
+    value: ${{ steps.check.outputs.action }}
+  issue-number:
+    description: 'Issue number touched, empty when none.'
+    value: ${{ steps.check.outputs.issue-number }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/check.mjs"
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token || github.token }}
+        INPUT_README: ${{ inputs.readme }}
+        INPUT_CHANNEL: ${{ inputs.channel }}
+        INPUT_ASSIGNEES: ${{ inputs.assignees }}
+        INPUT_MARKER: ${{ inputs.marker }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
