@@ -31,6 +31,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: wp-version-check
+  cancel-in-progress: false
+
 jobs:
   wordpress-version-checker:
     runs-on: ubuntu-latest
@@ -67,13 +71,23 @@ you didn't review can change your CI behaviour.
    (so `7.1.1-RC1` counts as `7.1`).
 2. Read the first readme that exists from the candidate list, on the default branch, and parse
    `Tested up to:`.
-3. If the readme is behind: find the open issue whose body contains the marker. Create it if missing,
-   update it if the title or body has drifted, and do nothing at all if it already matches.
+3. If the readme is behind: find the open issue whose body contains the marker (read through the
+   GraphQL issues connection — see below). Create it if missing, update it if the title or body has
+   drifted, and do nothing at all if it already matches.
 4. If the readme is current: if a marked issue is open, comment that the versions now match and close
    it. Otherwise do nothing.
 
 Precedence is stable → rc → beta, filtered by `channel`: with the default `rc`, a readme that is level
 with stable but behind an approaching release candidate gets an "upcoming version" issue.
+
+### Why the lookup uses GraphQL
+
+GitHub's REST `GET /repos/{owner}/{repo}/issues` **list** endpoint is eventually consistent — measured
+at up to ~5 seconds stale in both directions. Within that window, a second run could re-comment on a
+just-closed issue, or open a duplicate tracking issue. The GraphQL `issues` connection reflects state
+immediately, so the lookup goes through it; single-issue reads and all writes stay on REST, where they
+are consistent. Add a `concurrency` group to the calling workflow (see the usage example) so two runs
+queue rather than race — belt and braces, since the push and cron triggers can otherwise land together.
 
 Errors fail the run loudly (`::error::` + non-zero exit) rather than silently doing nothing —
 including a readme with no `Tested up to:` line, and a repo with 100+ open issues (where this action
